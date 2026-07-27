@@ -368,9 +368,60 @@ with tab_trends:
         )
         st.plotly_chart(style_fig(fig_factor, n_series), use_container_width=True, key="trends_factor")
 
+        # --- Route x incident-factor heatmap -------------------------------
+        heat_source = trend_queries.incidents_by_route_and_factor(conn)
+        if selected_routes:
+            heat_source = heat_source[heat_source["route"].isin(selected_routes)]
+
+        if heat_source.empty:
+            st.info("No categorized incidents to build a heat map from yet.")
+        else:
+            heat_routes = selected_routes if selected_routes else sorted(heat_source["route"].unique())
+            heat_factors = [f for f in config.INCIDENT_FACTOR_NAMES
+                             if f in heat_source["incident_factor"].unique()]
+            pivot = (
+                heat_source.pivot_table(index="incident_factor", columns="route",
+                                         values="incident_count", aggfunc="sum", fill_value=0)
+                .reindex(index=heat_factors, columns=heat_routes, fill_value=0)
+                .astype(int)
+            )
+
+            # Sequential blue ramp (light -> dark), per the reference dataviz palette -
+            # one hue, near-surface at the low end, never a rainbow.
+            BLUE_SEQUENTIAL = [
+                "#cde2fb", "#b7d3f6", "#9ec5f4", "#86b6ef", "#6da7ec", "#5598e7",
+                "#3987e5", "#2a78d6", "#256abf", "#1c5cab", "#184f95", "#104281", "#0d366b",
+            ]
+            heat_colorscale = [[i / (len(BLUE_SEQUENTIAL) - 1), c] for i, c in enumerate(BLUE_SEQUENTIAL)]
+
+            fig_heat = go.Figure(go.Heatmap(
+                z=pivot.values,
+                x=pivot.columns,
+                y=pivot.index,
+                colorscale=heat_colorscale,
+                xgap=2,
+                ygap=2,
+                text=pivot.values,
+                texttemplate="%{text}",
+                textfont=dict(color=INK_PRIMARY, size=12),
+                hovertemplate="%{y} × %{x}: %{z} incidents<extra></extra>",
+                colorbar=dict(title="Incidents", outlinewidth=0, tickfont=dict(color=INK_MUTED)),
+            ))
+            fig_heat.update_layout(
+                title="Incident factor by route - intensity (all dates)",
+                xaxis_title="Route", yaxis_title=None,
+                height=max(360, 40 * len(heat_factors) + 120),
+            )
+            fig_heat.update_yaxes(autorange="reversed")
+            st.caption("Darker cells = more incidents for that route/factor pair. "
+                       "Same all-dates scope as the chart above.")
+            st.plotly_chart(style_fig(fig_heat), use_container_width=True, key="trends_heatmap")
+
         with st.expander("Data tables"):
             st.dataframe(trend_df, use_container_width=True, hide_index=True)
             st.dataframe(factor_df, use_container_width=True, hide_index=True)
+            if not heat_source.empty:
+                st.dataframe(pivot.reset_index(), use_container_width=True, hide_index=True)
 
 # ===========================================================================
 # Tab 3 - Prediction
