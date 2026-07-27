@@ -401,9 +401,6 @@ with tab_trends:
                 colorscale=heat_colorscale,
                 xgap=2,
                 ygap=2,
-                text=pivot.values,
-                texttemplate="%{text}",
-                textfont=dict(color=INK_PRIMARY, size=12),
                 hovertemplate="%{y} × %{x}: %{z} incidents<extra></extra>",
                 colorbar=dict(title="Incidents", outlinewidth=0, tickfont=dict(color=INK_MUTED)),
             ))
@@ -413,6 +410,26 @@ with tab_trends:
                 height=max(360, 40 * len(heat_factors) + 120),
             )
             fig_heat.update_yaxes(autorange="reversed")
+
+            # Heatmap.textfont has no per-cell color, so cell labels are drawn as
+            # annotations instead - dark ink on the pale end of the ramp, white on
+            # the dark end, so every number stays readable against its own cell.
+            # Cutoff sits between ramp steps 7 and 8 (#2a78d6/#256abf), where black
+            # text drops under a 4.5:1 contrast ratio against the fill.
+            WHITE_TEXT_CUTOFF = 7.5 / (len(BLUE_SEQUENTIAL) - 1)
+            z_min, z_max = pivot.values.min(), pivot.values.max()
+            z_span = (z_max - z_min) or 1
+            fig_heat.update_layout(annotations=[
+                dict(
+                    x=route, y=factor, text=str(pivot.loc[factor, route]),
+                    showarrow=False, font=dict(
+                        size=12,
+                        color="#ffffff" if (pivot.loc[factor, route] - z_min) / z_span > WHITE_TEXT_CUTOFF
+                        else INK_PRIMARY,
+                    ),
+                )
+                for factor in pivot.index for route in pivot.columns
+            ])
             st.caption("Darker cells = more incidents for that route/factor pair. "
                        "Same all-dates scope as the chart above.")
             st.plotly_chart(style_fig(fig_heat), use_container_width=True, key="trends_heatmap")
