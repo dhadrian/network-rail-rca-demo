@@ -1,0 +1,12 @@
+# Secrets — never commit
+.env
+
+# Real incident data — keep local, only demo data ships to the client build
+rca_data.db
+extraction_log.jsonl
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
