@@ -30,6 +30,19 @@ import trend_queries
 
 st.set_page_config(page_title="RCA Categorization & Trend Tool", layout="wide")
 
+# Hide Streamlit's own chrome (hamburger menu, "Deploy"/GitHub toolbar, running
+# status widget, "Made with Streamlit" footer, top decoration bar) so the app
+# reads as a standalone tool rather than a Streamlit-hosted demo.
+st.markdown("""
+    <style>
+    #MainMenu {visibility: hidden;}
+    footer {visibility: hidden;}
+    [data-testid="stToolbar"] {visibility: hidden;}
+    [data-testid="stDecoration"] {visibility: hidden;}
+    [data-testid="stStatusWidget"] {visibility: hidden;}
+    </style>
+""", unsafe_allow_html=True)
+
 
 def require_login():
     """Simple username/password gate. Credentials come from APP_USERNAME /
