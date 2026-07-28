@@ -51,7 +51,6 @@ jobs:
     runs-on: ubuntu-latest
     needs: build
     permissions:
-      id-token: write #This is required for requesting the JWT
       contents: read #This is required for actions/checkout
 
     steps:
@@ -59,13 +58,6 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: python-app
-      
-      - name: Login to Azure
-        uses: azure/login@v2
-        with:
-          client-id: ${{ secrets.AZUREAPPSERVICE_CLIENTID_4673EEB0DD324ADC9C7892191A647A20 }}
-          tenant-id: ${{ secrets.AZUREAPPSERVICE_TENANTID_D318C2C0963749B6AA109761079B52A4 }}
-          subscription-id: ${{ secrets.AZUREAPPSERVICE_SUBSCRIPTIONID_004E30807C364D57BE0ABA6065B00F91 }}
 
       - name: 'Deploy to Azure Web App'
         uses: azure/webapps-deploy@v3
@@ -73,4 +65,4 @@ jobs:
         with:
           app-name: 'demoapp'
           slot-name: 'Production'
-          
+          publish-profile: ${{ secrets.AZURE_WEBAPP_PUBLISH_PROFILE }}
