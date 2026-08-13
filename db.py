@@ -201,3 +201,9 @@ def date_bounds(conn):
         "SELECT MIN(date), MAX(date) FROM incidents_normalized WHERE date IS NOT NULL"
     ).fetchone()
     return (row[0], row[1]) if row else (None, None)
+
+
+def clear_all_incidents(conn):
+    """Delete all incidents from the database. This cannot be undone."""
+    conn.execute("DELETE FROM incidents_normalized")
+    conn.commit()

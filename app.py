@@ -170,6 +170,29 @@ tab_upload, tab_trends, tab_predict, tab_qa = st.tabs(
 # Tab 1 - Upload & Categorize
 # ===========================================================================
 with tab_upload:
+    # Clear database button
+    col1, col2 = st.columns([3, 1])
+    with col2:
+        if st.button("Clear Database", type="secondary", use_container_width=True):
+            st.session_state["confirm_clear"] = True
+
+    if st.session_state.get("confirm_clear"):
+        st.warning("This will DELETE all incidents from the database. This cannot be undone.")
+        col_yes, col_no = st.columns(2)
+        with col_yes:
+            if st.button("Yes, clear everything", type="primary", use_container_width=True):
+                db.clear_all_incidents(conn)
+                st.success("Database cleared! All incidents removed.")
+                st.session_state["confirm_clear"] = False
+                st.cache_resource.clear()  # Clear Streamlit's resource cache
+                st.rerun()
+        with col_no:
+            if st.button("Cancel", use_container_width=True):
+                st.session_state["confirm_clear"] = False
+                st.rerun()
+
+    st.divider()
+
     uploaded = st.file_uploader(
         "Upload the raw investigation export (CSV)", type=["csv"]
     )
