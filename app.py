@@ -103,6 +103,14 @@ CATEGORICAL = [
 MAX_ROUTE_SERIES = len(CATEGORICAL)
 
 
+def df_to_csv(df, filename):
+    """Convert dataframe to CSV bytes for download."""
+    import io
+    csv_buffer = io.StringIO()
+    df.to_csv(csv_buffer, index=False)
+    return csv_buffer.getvalue().encode('utf-8')
+
+
 def route_color_map(routes):
     """Stable route -> color assignment for the whole session: a route keeps
     the slot it was first given, so changing the filter never repaints the
@@ -471,10 +479,50 @@ with tab_trends:
             st.plotly_chart(style_fig(fig_heat), use_container_width=True, key="trends_heatmap")
 
         with st.expander("Data tables"):
-            st.dataframe(trend_df, use_container_width=True, hide_index=True)
-            st.dataframe(factor_df, use_container_width=True, hide_index=True)
+            # Monthly trends table
+            st.subheader("Monthly Trends")
+            col_table, col_download = st.columns([4, 1])
+            with col_table:
+                st.dataframe(trend_df, use_container_width=True, hide_index=True)
+            with col_download:
+                st.download_button(
+                    label="Download CSV",
+                    data=df_to_csv(trend_df, "monthly_trends.csv"),
+                    file_name="monthly_trends.csv",
+                    mime="text/csv",
+                    use_container_width=True,
+                )
+
+            st.divider()
+
+            # Incident factor table
+            st.subheader("By Incident Factor")
+            col_table, col_download = st.columns([4, 1])
+            with col_table:
+                st.dataframe(factor_df, use_container_width=True, hide_index=True)
+            with col_download:
+                st.download_button(
+                    label="Download CSV",
+                    data=df_to_csv(factor_df, "incident_factors.csv"),
+                    file_name="incident_factors.csv",
+                    mime="text/csv",
+                    use_container_width=True,
+                )
+
             if not heat_source.empty:
-                st.dataframe(pivot.reset_index(), use_container_width=True, hide_index=True)
+                st.divider()
+                st.subheader("Route x Incident Factor Heatmap")
+                col_table, col_download = st.columns([4, 1])
+                with col_table:
+                    st.dataframe(pivot.reset_index(), use_container_width=True, hide_index=True)
+                with col_download:
+                    st.download_button(
+                        label="Download CSV",
+                        data=df_to_csv(pivot.reset_index(), "route_factor_breakdown.csv"),
+                        file_name="route_factor_breakdown.csv",
+                        mime="text/csv",
+                        use_container_width=True,
+                    )
 
 # ===========================================================================
 # Tab 3 - Prediction
