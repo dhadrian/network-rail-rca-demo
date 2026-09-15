@@ -172,8 +172,9 @@ def normalise(raw_df):
     out["period"] = out["period"].astype(int)
     out["risk_rank"] = out["risk_rank"].map(normalise_risk)
     out["event_date"] = pd.to_datetime(out["event_date"], errors="coerce").dt.strftime("%Y-%m-%d")
+    # Newer pandas stores missing text as NaN (a float), so check for str.
     out["is_occ_type"] = out["incident_type"].map(
-        lambda t: int(t is not None and t.strip().lower() in _OCC_TYPES_LOWER)
+        lambda t: int(isinstance(t, str) and t.strip().lower() in _OCC_TYPES_LOWER)
     )
     return out[FIELDS].reset_index(drop=True)
 

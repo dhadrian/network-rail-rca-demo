@@ -1,6 +1,6 @@
 streamlit
 duckdb
-pandas
+pandas>=2.2,<3
 openai
 plotly
 python-dotenv
