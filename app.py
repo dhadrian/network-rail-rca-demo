@@ -27,6 +27,9 @@ import extraction
 import prediction
 import qa_engine
 import trend_queries
+import occi_db
+import occi_analytics
+import occi_qa
 
 st.set_page_config(page_title="RCA Categorization & Trend Tool", layout="wide")
 
@@ -155,7 +158,15 @@ def get_conn():
     return conn
 
 
+@st.cache_resource
+def get_occi_conn():
+    conn = occi_db.get_occi_connection()
+    occi_db.create_occi_table(conn)
+    return conn
+
+
 conn = get_conn()
+occi_conn = get_occi_conn()
 
 # Check if running in demo mode
 import os
@@ -170,8 +181,8 @@ st.caption(
     f"{db.count_incidents(conn)} incidents in the normalized database."
 )
 
-tab_upload, tab_trends, tab_predict, tab_qa = st.tabs(
-    ["Upload & Categorize", "Trends", "Prediction", "Ask a question"]
+tab_upload, tab_trends, tab_predict, tab_occi, tab_qa = st.tabs(
+    ["Upload & Categorize", "Trends", "Prediction", "OCCI Analytics", "Ask a question"]
 )
 
 # ===========================================================================
@@ -753,7 +764,217 @@ with tab_predict:
                 )
 
 # ===========================================================================
-# Tab 4 - Ask a question
+# Tab 4 - OCCI Analytics
+# ===========================================================================
+with tab_occi:
+    st.subheader("OCCI (Operational Close Call Incidents) Analytics")
+
+    # Clear OCCI database button
+    col1, col2 = st.columns([3, 1])
+    with col2:
+        if st.button("Clear OCCI Data", type="secondary", use_container_width=True):
+            st.session_state["confirm_clear_occi"] = True
+
+    if st.session_state.get("confirm_clear_occi"):
+        st.warning("This will DELETE all OCCI incidents. This cannot be undone.")
+        col_yes, col_no = st.columns(2)
+        with col_yes:
+            if st.button("Yes, clear OCCI", type="primary", use_container_width=True):
+                occi_db.clear_all_occi(occi_conn)
+                st.success("OCCI data cleared!")
+                st.session_state["confirm_clear_occi"] = False
+                st.cache_resource.clear()
+                st.rerun()
+        with col_no:
+            if st.button("Cancel", use_container_width=True):
+                st.session_state["confirm_clear_occi"] = False
+                st.rerun()
+
+    st.divider()
+
+    # Upload OCCI data
+    uploaded_occi = st.file_uploader(
+        "Upload OCCI data (CSV or Excel)", type=["csv", "xlsx"]
+    )
+
+    occi_count = occi_db.count_occi_incidents(occi_conn)
+    if occi_count == 0:
+        st.info(f"No OCCI data loaded yet. Upload a CSV or Excel file to begin.")
+    else:
+        st.success(f"{occi_count} OCCI incidents loaded.")
+
+    if uploaded_occi is not None:
+        try:
+            if uploaded_occi.name.endswith('.xlsx'):
+                occi_df = pd.read_excel(uploaded_occi)
+            else:
+                occi_df = pd.read_csv(uploaded_occi)
+
+            st.write(f"**{len(occi_df):,} rows x {len(occi_df.columns)} columns** detected.")
+
+            # Normalize columns
+            occi_df_norm = occi_analytics.parse_occi_csv(occi_df)
+
+            if st.button("Load OCCI Data", type="primary"):
+                progress = st.progress(0.0)
+                status = st.empty()
+                loaded = 0
+
+                for i, row in occi_df_norm.iterrows():
+                    record = row.to_dict()
+                    try:
+                        occi_db.insert_occi_incident(occi_conn, record)
+                        loaded += 1
+                    except Exception as e:
+                        st.warning(f"Row {i}: {str(e)[:100]}")
+                    progress.progress((i + 1) / len(occi_df_norm))
+
+                status.empty()
+                st.success(f"Loaded **{loaded}** OCCI incidents.")
+                st.cache_resource.clear()
+                st.rerun()
+
+        except Exception as e:
+            st.error(f"Error reading file: {str(e)}")
+
+    st.divider()
+
+    # Show dashboards only if data exists
+    if occi_db.count_occi_incidents(occi_conn) > 0:
+        occi_full_df = occi_db.get_all_occi(occi_conn)
+
+        # Headline metrics
+        st.subheader("Summary Metrics")
+        metric_cols = st.columns(4)
+        with metric_cols[0]:
+            st.metric("Total Incidents", occi_db.count_occi_incidents(occi_conn))
+        with metric_cols[1]:
+            routes_count = len(occi_analytics.aggregate_by_route(occi_full_df)) if len(occi_full_df) > 0 else 0
+            st.metric("Unique Routes", routes_count)
+        with metric_cols[2]:
+            dates = pd.to_datetime(occi_full_df['event_date'], errors='coerce')
+            date_range = f"{dates.min().date()} to {dates.max().date()}" if not dates.isna().all() else "N/A"
+            st.metric("Date Range", date_range if len(date_range) > 20 else "N/A")
+        with metric_cols[3]:
+            data_quality = occi_analytics.calculate_data_quality(occi_full_df)
+            st.metric("Data Complete", f"{data_quality['total_records']:.0f}%")
+
+        # Dashboard tabs
+        dash_col1, dash_col2 = st.columns(2)
+
+        # --- Risk Rank Profile ---
+        with dash_col1:
+            st.markdown("#### Risk Rank Profile")
+            risk_df = occi_analytics.aggregate_by_risk_rank(occi_full_df)
+            if not risk_df.empty:
+                fig_risk = go.Figure(data=[
+                    go.Bar(x=risk_df['risk_rank'], y=risk_df['count'],
+                           marker_color=SINGLE_SERIES, showlegend=False)
+                ])
+                fig_risk.update_layout(
+                    title=None, xaxis_title=None, yaxis_title="Count",
+                    height=350
+                )
+                st.plotly_chart(style_fig(fig_risk, n_series=1), use_container_width=True, key="occi_risk")
+
+        # --- Incident Types ---
+        with dash_col2:
+            st.markdown("#### Most Frequent Incident Types")
+            type_df = occi_analytics.aggregate_by_incident_type(occi_full_df)
+            if not type_df.empty:
+                type_df = type_df.head(8)
+                fig_type = go.Figure(data=[
+                    go.Bar(y=type_df['incident_type'], x=type_df['incident_count'],
+                           orientation='h', marker_color=SINGLE_SERIES, showlegend=False)
+                ])
+                fig_type.update_layout(
+                    title=None, xaxis_title="Count", yaxis_title=None,
+                    height=350, margin=dict(l=200)
+                )
+                st.plotly_chart(style_fig(fig_type, n_series=1), use_container_width=True, key="occi_types")
+
+        # --- Incidents by Period ---
+        st.markdown("#### Incidents by Period")
+        period_df = occi_analytics.aggregate_by_period(occi_full_df)
+        if period_df is not None and not period_df.empty:
+            period_df['period'] = period_df['period'].astype(str)
+            fig_period = go.Figure(data=[
+                go.Scatter(x=period_df['period'], y=period_df['incident_count'],
+                           mode='lines+markers', name='Incidents',
+                           line=dict(color=SINGLE_SERIES, width=2),
+                           marker=dict(size=6))
+            ])
+            fig_period.update_layout(
+                title=None, xaxis_title="Period", yaxis_title="Incidents",
+                height=350
+            )
+            st.plotly_chart(style_fig(fig_period, n_series=1), use_container_width=True, key="occi_period")
+
+        # --- Route Comparison ---
+        st.markdown("#### Incidents by Route")
+        route_df = occi_analytics.aggregate_by_route(occi_full_df)
+        if route_df is not None and not route_df.empty:
+            fig_route = go.Figure(data=[
+                go.Bar(x=route_df['route_area'], y=route_df['incident_count'],
+                       marker_color=SINGLE_SERIES, showlegend=False)
+            ])
+            fig_route.update_layout(
+                title=None, xaxis_title="Route", yaxis_title="Incidents",
+                height=350
+            )
+            st.plotly_chart(style_fig(fig_route, n_series=1), use_container_width=True, key="occi_route")
+
+        # --- Route x Period Comparison ---
+        st.markdown("#### Incidents by Route & Period")
+        route_period_df = occi_analytics.route_comparison_by_period(occi_full_df)
+        if route_period_df is not None and not route_period_df.empty:
+            route_period_df['period'] = route_period_df['period'].astype(str)
+            fig_rp = px.line(route_period_df, x='period', y='incident_count',
+                            color='route_area', markers=True)
+            fig_rp.update_layout(height=400, xaxis_title="Period", yaxis_title="Incidents")
+            st.plotly_chart(style_fig(fig_rp, n_series=len(route_period_df['route_area'].unique())),
+                           use_container_width=True, key="occi_route_period")
+
+        # --- Data Quality ---
+        with st.expander("Data Quality Report"):
+            quality = occi_analytics.calculate_data_quality(occi_full_df)
+            quality_df = pd.DataFrame({
+                'Field': list(quality.keys()),
+                'Coverage %': [f"{v:.1f}%" for v in quality.values()]
+            })
+            st.dataframe(quality_df, use_container_width=True, hide_index=True)
+
+        # --- Export Data ---
+        st.divider()
+        st.markdown("#### Export Data")
+        col_exp1, col_exp2 = st.columns(2)
+        with col_exp1:
+            st.download_button(
+                label="Download All OCCI Data (CSV)",
+                data=df_to_csv(occi_full_df, "occi_data"),
+                file_name="occi_data.csv",
+                mime="text/csv",
+                use_container_width=True
+            )
+        with col_exp2:
+            summary_df = pd.DataFrame({
+                'Metric': ['Total Incidents', 'Unique Routes', 'Date Range'],
+                'Value': [
+                    occi_db.count_occi_incidents(occi_conn),
+                    len(occi_analytics.aggregate_by_route(occi_full_df)) if len(occi_full_df) > 0 else 0,
+                    f"{pd.to_datetime(occi_full_df['event_date'], errors='coerce').min().date()} to {pd.to_datetime(occi_full_df['event_date'], errors='coerce').max().date()}"
+                ]
+            })
+            st.download_button(
+                label="Download Summary (CSV)",
+                data=df_to_csv(summary_df, "occi_summary"),
+                file_name="occi_summary.csv",
+                mime="text/csv",
+                use_container_width=True
+            )
+
+# ===========================================================================
+# Tab 5 - Ask a question
 # ===========================================================================
 with tab_qa:
     if "qa_messages" not in st.session_state:
@@ -778,6 +999,28 @@ with tab_qa:
             fig = px.bar(df, x=x_col, y=y_col, color_discrete_sequence=[SINGLE_SERIES])
         return style_fig(fig, n_series=1)
 
+    st.subheader("Ask a question about the data")
+
+    # Data source selector
+    rca_count = db.count_incidents(conn)
+    occi_count = occi_db.count_occi_incidents(occi_conn)
+
+    data_source_col, info_col = st.columns([1, 3])
+    with data_source_col:
+        if rca_count > 0 and occi_count > 0:
+            data_source = st.radio(
+                "Data source",
+                options=["RCA Incidents", "OCCI Data"],
+                horizontal=True,
+                label_visibility="collapsed"
+            )
+        elif occi_count > 0:
+            data_source = "OCCI Data"
+            st.info("OCCI data available")
+        else:
+            data_source = "RCA Incidents"
+            st.info("RCA incidents available")
+
     for message in st.session_state.qa_messages:
         with st.chat_message(message["role"]):
             st.markdown(message["content"])
@@ -791,33 +1034,66 @@ with tab_qa:
                     st.plotly_chart(fig, use_container_width=True, key=f"qa_result_{id(message)}")
                 st.dataframe(df, use_container_width=True, hide_index=True)
 
-    question = st.chat_input("Ask about the incident data, e.g. "
-                             "'Which route had the most fatigue incidents this year?'")
+    if data_source == "RCA Incidents":
+        question = st.chat_input("Ask about RCA incidents, e.g. "
+                                 "'Which route had the most fatigue incidents?'")
+    else:
+        question = st.chat_input("Ask about OCCI data, e.g. "
+                                 "'How many incidents in North West with high risk?'")
+
     if question:
         st.session_state.qa_messages.append({"role": "user", "content": question})
-        if db.count_incidents(conn) == 0:
-            st.session_state.qa_messages.append({
-                "role": "assistant",
-                "content": "There are no categorized incidents yet - run a "
-                           "categorization in the first tab, then ask again.",
-            })
-        else:
-            try:
-                result_df, summary, sql = qa_engine.ask_question(question, conn)
+
+        if data_source == "RCA Incidents":
+            if rca_count == 0:
                 st.session_state.qa_messages.append({
                     "role": "assistant",
-                    "content": summary,
-                    "sql": sql,
-                    "df": result_df,
+                    "content": "There are no RCA incidents yet - run a categorization "
+                               "in the first tab, then ask again.",
                 })
-            except qa_engine.UnsafeSQLError as exc:
+            else:
+                try:
+                    result_df, summary, sql = qa_engine.ask_question(question, conn)
+                    st.session_state.qa_messages.append({
+                        "role": "assistant",
+                        "content": summary,
+                        "sql": sql,
+                        "df": result_df,
+                    })
+                except qa_engine.UnsafeSQLError as exc:
+                    st.session_state.qa_messages.append({
+                        "role": "assistant",
+                        "content": f"I couldn't answer that safely: {exc}",
+                    })
+                except Exception as exc:
+                    st.session_state.qa_messages.append({
+                        "role": "assistant",
+                        "content": f"Something went wrong: {str(exc)[:200]}",
+                    })
+        else:  # OCCI Data
+            if occi_count == 0:
                 st.session_state.qa_messages.append({
                     "role": "assistant",
-                    "content": f"I couldn't answer that safely: {exc}",
+                    "content": "There is no OCCI data yet - upload OCCI data in the "
+                               "OCCI Analytics tab, then ask again.",
                 })
-            except Exception as exc:
-                st.session_state.qa_messages.append({
-                    "role": "assistant",
-                    "content": f"Something went wrong answering that: {exc}",
-                })
+            else:
+                try:
+                    result_df, summary, sql = occi_qa.ask_question(question, occi_conn)
+                    st.session_state.qa_messages.append({
+                        "role": "assistant",
+                        "content": summary,
+                        "sql": sql,
+                        "df": result_df,
+                    })
+                except occi_qa.UnsafeOCCISQLError as exc:
+                    st.session_state.qa_messages.append({
+                        "role": "assistant",
+                        "content": f"I couldn't answer that safely: {exc}",
+                    })
+                except Exception as exc:
+                    st.session_state.qa_messages.append({
+                        "role": "assistant",
+                        "content": f"Something went wrong: {str(exc)[:200]}",
+                    })
         st.rerun()
