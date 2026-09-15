@@ -321,6 +321,11 @@ def _deep(conn, source, reviewed):
                          width="stretch", hide_index=True)
 
     st.markdown("#### AI deep dive")
+    st.caption(f"AI reads the reviews of the incidents with {factor} (up to 60, elevated and "
+               "high-confidence first) and looks for what is hard to see one report at a time: how "
+               "this factor leads to incidents, recurring patterns (with incident ids as evidence), "
+               "warning signs to monitor and questions for future investigations. Other factors are "
+               "only mentioned where they repeatedly occur together with this one.")
     payload = da.factor_payload(reviewed, source, factor, case_limit=60)
     current = da.stable_hash(payload)
     stored = occi_db.load_deep_output(conn, source, "deep_dive", factor)
@@ -353,14 +358,17 @@ def _deep(conn, source, reviewed):
                 st.error(f"Could not run deep dive: {exc}")
 
     st.markdown("#### Incidents with this factor")
+    st.caption(f"Every incident where **{factor}** is the main factor or the second contributing "
+               "factor. The Factors column shows both factors, so other factors can appear alongside it.")
     table = pd.DataFrame({
         "Incident": rows["record_id"],
+        f"{factor} is": ["Main factor" if f1 == factor else "Second factor" for f1 in rows["factor_1"]],
         "Route": rows["route"],
         "Period": rows["period"],
         "Risk / severity": rows["risk"],
         "Underlying cause": rows["underlying_cause"],
         "Causal chain": rows["causal_chain"].map(lambda c: " > ".join(c) if isinstance(c, list) else ""),
-        "Factors": [" | ".join(x for x in (_label(f1, s1), _label(f2, s2)) if x)
+        "Factors (main | second)": [" | ".join(x for x in (_label(f1, s1), _label(f2, s2)) if x)
                     for f1, s1, f2, s2 in zip(rows["factor_1"], rows["subfactor_1"], rows["factor_2"], rows["subfactor_2"])],
         "Confidence": rows["confidence"],
         "Status": rows["status"],
