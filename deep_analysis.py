@@ -174,12 +174,12 @@ OCCI_FACTORS = {
 
 FRAMEWORKS = {
     "occi": {
-        "label": "Operational close calls",
+        "label": "OCC",
         "name": "Close call reviewer incident factors (Data Validation Workbook - 10 factors, 112 sub-factors)",
         "factors": {f: {"subfactors": subs, "definition": None} for f, subs in OCCI_FACTORS.items()},
     },
     "rca": {
-        "label": "Root cause analysis investigations",
+        "label": "SMIS's",
         "name": config.HANDBOOK_VERSION + " - 10 incident factors",
         "factors": {f: {"subfactors": [], "definition": info["definition"]}
                     for f, info in config.INCIDENT_FACTORS.items()},

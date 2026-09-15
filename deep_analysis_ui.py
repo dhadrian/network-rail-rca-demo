@@ -13,7 +13,15 @@ import deep_analysis as da
 import occi_db
 from chart_style import CATEGORICAL, INK_MUTED, SINGLE_SERIES, df_to_csv, style_fig
 
-SOURCES = {"Operational close calls": "occi", "Root cause analysis investigations": "rca"}
+SOURCES = {"OCC": "occi", "SMIS's": "rca"}
+ELEVATED_NOTE = {
+    "occi": ("**Elevated / serious** (red in the charts) = OCCs with Risk Rank **Medium/High, "
+             "Potentially Significant or Potentially Severe**. Nil Risk, Low, Medium and Unknown "
+             "are not counted."),
+    "rca": ("**Elevated / serious** (red in the charts) = SMIS's with Severity **Major, "
+            "Shock/trauma or Fatality** (anything worse than Minor). Minor and not recorded are "
+            "not counted."),
+}
 LEVELS = ["1. Insights", "2. Recommendations", "3. Deep analysis"]
 PRIORITY_ICON = {"High": "🔴 High", "Medium": "🟠 Medium", "Low": "🟢 Low"}
 
@@ -278,7 +286,8 @@ def _deep(conn, source, reviewed):
     m = st.columns(4)
     m[0].metric("Incidents", int(row["incidents"]))
     m[1].metric("As main factor", int(row["primary"]))
-    m[2].metric("Elevated / serious", int(row["elevated"]))
+    m[2].metric("Elevated / serious", int(row["elevated"]),
+                help=ELEVATED_NOTE[source].replace("**", ""))
     m[3].metric("Share of identified causes", f"{row['share']:.0%}")
 
     left, right = st.columns(2)
@@ -399,9 +408,10 @@ def render(conn, occi_incidents, load_rca_incidents, occi_filter_note):
                                     help="Leave empty for all routes.")
             if picked:
                 records = records[records["route"].isin(picked)]
-        note = ("Root cause analysis investigations with an immediate or underlying cause recorded. "
+        note = ("SMIS's with an immediate or underlying cause recorded. "
                 "The report filters at the top of the page do not apply here - use the Routes box.")
     st.caption(f"Framework: **{framework['name']}**. {note}")
+    st.caption(ELEVATED_NOTE[source])
 
     if records.empty:
         st.info("No incidents with report text in this view - upload data first.")
