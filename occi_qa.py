@@ -1,126 +1,80 @@
 """
-Natural language Q&A over OCCI data.
-
-Similar to qa_engine.py but for OCCI incidents.
+Natural-language Q&A over the OCCI tables - same validated-SELECT pattern as
+qa_engine.py, pointed at occi_data.db.
 """
 
 import json
-import re
+
 import pandas as pd
-import config
+
+import occi_analytics
 import occi_db
 from azure_client import chat_json
+from qa_engine import MAX_SUMMARY_ROWS, UnsafeSQLError, _validate_sql
 
 
-_FORBIDDEN_KEYWORDS = re.compile(
-    r"\b(insert|update|delete|drop|alter|create|replace|attach|detach|"
-    r"pragma|vacuum|truncate|grant|revoke|reindex)\b",
-    re.IGNORECASE,
-)
-
-
-class UnsafeOCCISQLError(ValueError):
-    """Raised when generated SQL fails validation."""
-
-
-def _validate_sql(sql):
-    """Allow exactly one SELECT statement with no mutating keywords."""
-    if not isinstance(sql, str) or not sql.strip():
-        raise UnsafeOCCISQLError("The model did not return a SQL statement.")
-    cleaned = sql.strip().rstrip(";").strip()
-    if ";" in cleaned:
-        raise UnsafeOCCISQLError(
-            "The generated SQL contains multiple statements and was not run:\n" + sql
-        )
-    if not cleaned.lower().startswith("select"):
-        raise UnsafeOCCISQLError(
-            "The generated SQL does not start with SELECT and was not run:\n" + sql
-        )
-    match = _FORBIDDEN_KEYWORDS.search(cleaned)
-    if match:
-        raise UnsafeOCCISQLError(
-            f"The generated SQL contains the forbidden keyword "
-            f"{match.group(0).upper()!r} and was not run:\n" + sql
-        )
-    return cleaned
-
-
-def build_occi_sql_system_prompt(create_table_sql):
-    """Build system prompt for OCCI Q&A."""
+def _sql_system_prompt():
     return (
-        "You are a railway safety analyst answering questions about Operational "
-        "Close Call Incidents (OCCI). You have access to a database of OCCI records.\n\n"
-        "Your task: Given a plain-English question, write a single SQL SELECT statement "
-        "that answers it. Your response must be valid JSON with exactly this shape:\n"
-        '{"sql": "<the SELECT statement>"}\n\n'
-        f"The database schema:\n{create_table_sql}\n\n"
-        "Column reference:\n"
-        "- smis_reference: Incident ID\n"
-        "- event_date: Date of incident\n"
-        "- period: Month/period\n"
-        "- place: Location\n"
-        "- route_owner: Route or area owner\n"
-        "- route_area: Route area (North West, Central, West Coast Mainline South, Western, East Midlands, Scotland's Railway, Anglia, East Coast)\n"
-        "- possession_type: Type of possession\n"
-        "- external_system_reference: External reference\n"
-        "- risk_rank: Risk level (Unknown, Low, Medium, Medium/High, Potentially Significant, Potentially Severe)\n"
-        "- incident_type: Type of incident\n"
-        "- incident_description: Description\n"
-        "- incident_count: Number of incidents\n"
-        "- maintenance_hours: Maintenance hours\n\n"
-        "Rules:\n"
-        "1. Use LOWER() for case-insensitive text comparisons: LOWER(column) = LOWER('value')\n"
-        "2. Always write valid SQLite syntax\n"
-        "3. Use COUNT(*), SUM(), AVG() for aggregations\n"
-        "4. Filter by date range using event_date\n"
-        "5. Return only SELECT statements - no mutations\n"
-        "6. If the question is ambiguous, write the most likely query\n"
+        "You translate a railway safety manager's question about operational "
+        "close calls (OCCs) into ONE SQLite SELECT statement.\n\n"
+        f"Schema:\n{occi_db.schema_sql()}\n\n"
+        "Column notes:\n"
+        "- occi_incidents holds one row per reported incident (smis_reference "
+        "can repeat for a handful of rows; count rows, not distinct references, "
+        "to match the client's workbook).\n"
+        "- period is the railway period as an integer YYYYPP with 13 periods "
+        "per year (e.g. 202601 = 2026/01, 202513 = 2025/13). It is NOT a "
+        "calendar month; use event_date for calendar dates (YYYY-MM-DD text).\n"
+        f"- route values include: {', '.join(occi_analytics.DEFAULT_ROUTES)}, "
+        "plus other Network Rail routes.\n"
+        f"- risk_rank values: {', '.join(occi_analytics.RISK_ORDER)}. 'Elevated "
+        f"risk' means risk_rank IN ({', '.join(repr(r) for r in occi_analytics.ELEVATED_RISKS)}).\n"
+        "- event_status is 'Open', 'Completed' or NULL (not recorded).\n"
+        "- incident_type is the railway operating incident type; is_occ_type = 1 "
+        "when that type is on the client's OCC report list (the Overall and "
+        "route reports only count is_occ_type = 1 rows).\n"
+        "- occi_hours has maintenance hours per route and period; a rate per "
+        "100,000 hours is COUNT(incidents) / SUM(maintenance_hours) * 100000 "
+        "over periods present in both tables.\n"
+        "- occi_themes.themes is a JSON array text of AI-tagged themes; filter "
+        "with themes LIKE '%<theme>%' joined on smis_reference.\n\n"
+        "Rules: compare text case-insensitively with LOWER(col) = LOWER('value') "
+        "or LOWER(col) LIKE LOWER('%value%'); add ORDER BY for rankings; "
+        "LIMIT large listings to 200 rows.\n\n"
+        'Respond with a JSON object only: {"sql": "<the SELECT statement>"}'
     )
 
 
-def _summarize_result(user_question, sql, result_df):
-    """Summarize SQL results back to plain English."""
-    MAX_SUMMARY_ROWS = 50
-    preview_rows = result_df.head(MAX_SUMMARY_ROWS).to_dict(orient="records")
+_SUMMARY_SYSTEM_PROMPT = (
+    "You summarize SQL query results about railway operational close calls "
+    "for a safety manager. The user message has their question, the SQL run "
+    "and the rows returned. Write 1-2 plain-English sentences answering the "
+    "question using ONLY values present in the rows - never invent or "
+    "extrapolate numbers. A period value like 202604 is railway period 2026/04 "
+    "(13 periods per year) - write it as 2026/04, never as a month name. If "
+    "the result is empty, say no matching incidents were found.\n\n"
+    'Respond with a JSON object only: {"summary": "<the answer>"}'
+)
+
+
+def ask_question(user_question, conn):
+    """Returns (result_df, summary, sql). Raises UnsafeSQLError if the
+    generated SQL fails validation (it is then never executed)."""
+    parsed = chat_json(_sql_system_prompt(), user_question, purpose="occi_qa_sql")
+    if "sql" not in parsed:
+        raise UnsafeSQLError(f"The model response has no 'sql' key: {parsed!r}")
+
+    sql = _validate_sql(parsed["sql"])
+    result_df = pd.read_sql_query(sql, conn)
+
     payload = (
         f"Original question: {user_question}\n\n"
         f"SQL that was executed:\n{sql}\n\n"
         f"Total rows returned: {len(result_df)}\n"
         f"Rows (first {MAX_SUMMARY_ROWS} shown):\n"
-        f"{json.dumps(preview_rows, ensure_ascii=False, default=str)}"
+        f"{json.dumps(result_df.head(MAX_SUMMARY_ROWS).to_dict(orient='records'), ensure_ascii=False, default=str)}"
     )
-
-    system_prompt = (
-        "You summarize OCCI query results for a railway safety manager. The user "
-        "message contains their original question, the SQL that was run, and the "
-        "rows it returned. Write 1-2 plain-English sentences answering the "
-        "question using ONLY the numbers and values present in those rows - never "
-        "invent, extrapolate or round. If empty, say no matching incidents found.\n\n"
-        "Respond with JSON only:\n"
-        '{"summary": "<the 1-2 sentence answer>"}'
-    )
-
-    parsed = chat_json(system_prompt, payload, purpose="occi_qa_summary")
-    summary = parsed.get("summary")
+    summary = chat_json(_SUMMARY_SYSTEM_PROMPT, payload, purpose="occi_qa_summary").get("summary")
     if not isinstance(summary, str) or not summary.strip():
-        raise ValueError(f"Summary response is missing a 'summary' string: {parsed!r}")
-    return summary.strip()
-
-
-def ask_question(user_question, conn):
-    """Answer a plain-English question about OCCI incidents.
-
-    Returns (result_df, summary, sql).
-    """
-    parsed = chat_json(
-        build_occi_sql_system_prompt(occi_db.get_create_table_sql()),
-        user_question,
-        purpose="occi_qa_sql",
-    )
-    if "sql" not in parsed:
-        raise UnsafeOCCISQLError(f"The model response has no 'sql' key: {parsed!r}")
-
-    sql = _validate_sql(parsed["sql"])
-    result_df = pd.read_sql_query(sql, conn)
-    summary = _summarize_result(user_question, sql, result_df)
-    return result_df, summary, sql
+        raise ValueError("Summary response is missing a 'summary' string.")
+    return result_df, summary.strip(), sql

@@ -3,7 +3,10 @@
 
 # Real incident data — keep local, only demo data ships to the client build
 rca_data.db
+occi_data.db
 extraction_log.jsonl
+OCC_Data.xlsx
+OCC_Data_Analysis.xlsx
 
 # Python
 __pycache__/

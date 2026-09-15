@@ -6,3 +6,4 @@ plotly
 python-dotenv
 statsmodels
 scikit-learn
+openpyxl
